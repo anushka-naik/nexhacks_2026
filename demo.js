@@ -95,7 +95,7 @@ async function transformToStructuredFormat(overshootOutput) {
         const response = await fetch("https://api.openai.com/v1/chat/completions", {
             method: "POST",
             headers: {
-                "Content-Type": "application/json",
+                "Content-Type": "application/json"
              
             },
             body: JSON.stringify({

@@ -3,22 +3,41 @@ from flask_cors import CORS
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import os
+import subprocess
 from graph_store import GraphStore, Neo4jConfig
 from models import Observation, Entity
 
 app = Flask(__name__)
 CORS(app)  
 
-# Neo4j Configuration
 neo4j_config = Neo4jConfig(
     uri="neo4j+s://df6f46e8.databases.neo4j.io",
     user="neo4j",
     password="GrFPX0A9rfqeWZgJY-GNygpTSESYCI8yobmy2QUI_QA"
 )
 
-# Initialize GraphStore
 graph_store = GraphStore(neo4j_config)
 graph_store.ensure_constraints()
+
+
+def send_imessage_observation_notification(user_id: str, summary: str) -> bool:
+    phone = os.environ.get("IMESSAGE_PHONE")
+    if not phone:
+        return False
+
+    script_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "imessage_notify.js")
+    message = f"New observation for {user_id}: {summary}"[:240]
+
+    try:
+        subprocess.Popen(
+            ["node", script_path, phone, message],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception as e:
+        print(f"Error sending iMessage notification: {e}")
+        return False
+    return True
 
 @app.route('/health', methods=['GET'])
 def health_check():
@@ -45,11 +64,9 @@ def receive_observation():
     try:
         data = request.json
         
-        # Validate required fields
         if not data.get('user_id'):
             return jsonify({"error": "user_id is required"}), 400
         
-        # Create Observation object
         entities = [
             Entity(
                 kind=e.get('kind', 'object'),
@@ -67,12 +84,16 @@ def receive_observation():
             entities=entities
         )
         
-        # Store in Neo4j
         timestamp = datetime.now(timezone.utc)
         event_id = graph_store.upsert_observation(
             user_id=data['user_id'],
             obs=observation,
             ts=timestamp
+        )
+
+        send_imessage_observation_notification(
+            user_id=data['user_id'],
+            summary=observation.summary or observation.activity,
         )
         
         return jsonify({
@@ -169,6 +190,22 @@ def get_entities(user_id):
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route('/demo-imessage', methods=['GET', 'POST'])
+def demo_imessage():
+    user_id = request.args.get('user_id', 'demo_user')
+    message = request.args.get('message', 'This is a demo iMessage notification.')
+
+    ok = send_imessage_observation_notification(user_id=user_id, summary=message)
+    if not ok:
+        return jsonify({"success": False, "error": "IMESSAGE_PHONE not configured or send failed"}), 500
+
+    return jsonify({
+        "success": True,
+        "user_id": user_id,
+        "message": message
+    }), 200
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)

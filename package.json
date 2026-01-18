@@ -14,7 +14,9 @@
   "license": "ISC",
   "dependencies": {
     "@overshoot/sdk": "^0.1.0-alpha.2",
-    "neo4j-driver": "^5.28.2"
+    "neo4j-driver": "^5.28.2",
+    "@photon-ai/imessage-kit": "latest",
+    "better-sqlite3": "^11.8.1"
   },
   "devDependencies": {
     "vite": "^7.3.1"
