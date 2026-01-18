@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from neo4j import GraphDatabase
 from datetime import datetime, timezone
 import uuid
-from models import Observation
+from models import Observation, UnifiedObservation
 
 @dataclass
 class Neo4jConfig:
@@ -101,9 +101,134 @@ class GraphStore:
             )
         return event_id
 
-    def add_task(self, user_id: str, title: str, place_hint: str | None = None) -> str:
+    def upsert_unified_observation(self, user_id: str, obs: UnifiedObservation, ts: datetime) -> dict:
+        """
+        Store a unified observation including extracted memories and tasks.
+
+        Returns dict with event_id and lists of stored memory/task IDs.
+        """
+        event_id = str(uuid.uuid4())
+        ts_iso = ts.replace(tzinfo=timezone.utc).isoformat()
+        hour = ts.astimezone(timezone.utc).hour
+
+        result = {
+            "event_id": event_id,
+            "memory_ids": [],
+            "task_ids": [],
+        }
+
+        # Build entities payload
+        entities_payload = [
+            {
+                "kind": e.kind,
+                "name": e.name.strip().lower(),
+                "display_name": e.name.strip(),
+                "confidence": float(e.confidence),
+            }
+            for e in obs.entities
+            if e.name and e.kind
+        ]
+
+        # Store main event
+        with self.driver.session() as s:
+            s.run(
+                """
+                MERGE (u:User {id: $user_id})
+
+                MERGE (ev:Event {id: $event_id})
+                ON CREATE SET
+                    ev.user_id = $user_id,
+                    ev.ts = $ts,
+                    ev.activity = $activity,
+                    ev.summary = $combined_context,
+                    ev.visual_summary = $visual_summary,
+                    ev.speech_summary = $speech_summary,
+                    ev.speaker_intent = $speaker_intent,
+                    ev.place = $place,
+                    ev.salience = $salience,
+                    ev.has_actionable_content = $has_actionable
+
+                MERGE (u)-[:HAD_EVENT]->(ev)
+
+                WITH ev
+                UNWIND $entities AS ent
+                  MERGE (en:Entity {user_id: $user_id, kind: ent.kind, name: ent.name})
+                  ON CREATE SET en.display_name = ent.display_name
+                  SET en.last_seen_ts = $ts
+                  MERGE (ev)-[:INVOLVES {confidence: ent.confidence}]->(en)
+
+                WITH ev
+                MERGE (r:Routine {
+                    user_id: $user_id,
+                    activity: $activity,
+                    hour: $hour,
+                    place: coalesce($place, "unknown")
+                })
+                SET r.count = coalesce(r.count, 0) + 1,
+                    r.last_seen_ts = $ts
+                """,
+                user_id=user_id,
+                event_id=event_id,
+                ts=ts_iso,
+                hour=hour,
+                activity=obs.activity,
+                combined_context=obs.combined_context,
+                visual_summary=obs.visual_summary,
+                speech_summary=obs.speech_summary,
+                speaker_intent=obs.speaker_intent,
+                place=obs.place,
+                salience=float(obs.salience),
+                has_actionable=obs.has_actionable_content,
+                entities=entities_payload,
+            )
+
+        # Store extracted memories (linked to event AND related entities)
+        for memory in obs.memories_to_store:
+            mem_id = str(uuid.uuid4())
+            # Normalize entity names for matching
+            related_names = [name.strip().lower() for name in memory.related_entities if name]
+            with self.driver.session() as s:
+                s.run(
+                    """
+                    MATCH (ev:Event {id: $event_id})
+                    CREATE (m:Memory {
+                        id: $mem_id,
+                        user_id: $user_id,
+                        summary: $summary,
+                        importance: $importance,
+                        reason: $reason,
+                        ts: $ts
+                    })
+                    MERGE (ev)-[:EXTRACTED_MEMORY]->(m)
+
+                    WITH m
+                    UNWIND $related_names AS ename
+                        MATCH (en:Entity {user_id: $user_id, name: ename})
+                        MERGE (m)-[:MENTIONS]->(en)
+                    """,
+                    event_id=event_id,
+                    mem_id=mem_id,
+                    user_id=user_id,
+                    summary=memory.summary,
+                    importance=memory.importance,
+                    reason=memory.reason,
+                    ts=ts_iso,
+                    related_names=related_names,
+                )
+            result["memory_ids"].append(mem_id)
+
+        # Store extracted tasks (linked to user AND related entities)
+        for task in obs.tasks_to_add:
+            task_id = self.add_task(user_id, task.title, task.place_hint, task.related_entities)
+            result["task_ids"].append(task_id)
+
+        return result
+
+    def add_task(self, user_id: str, title: str, place_hint: str | None = None, related_entities: list[str] | None = None) -> str:
         task_id = str(uuid.uuid4())
         ts_iso = datetime.now(timezone.utc).isoformat()
+        # Normalize entity names for matching
+        related_names = [name.strip().lower() for name in (related_entities or []) if name]
         with self.driver.session() as s:
             s.run(
                 """
@@ -117,12 +242,18 @@ class GraphStore:
                     created_ts: $created_ts
                 })
                 MERGE (u)-[:HAS_TASK]->(t)
+
+                WITH t
+                UNWIND $related_names AS ename
+                    MATCH (en:Entity {user_id: $user_id, name: ename})
+                    MERGE (t)-[:RELATED_TO]->(en)
                 """,
                 user_id=user_id,
                 task_id=task_id,
                 title=title,
                 place_hint=place_hint,
                 created_ts=ts_iso,
+                related_names=related_names,
             )
         return task_id
 
