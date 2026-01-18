@@ -1,0 +1,22 @@
+{
+  "name": "cmu_hackathon",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "test-db": "node test-db.js"
+  },
+  "keywords": [],
+  "check-db": "node check-db.js",
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@overshoot/sdk": "^0.1.0-alpha.2",
+    "neo4j-driver": "^5.28.2"
+  },
+  "devDependencies": {
+    "vite": "^7.3.1"
+  }
+}
