@@ -6,6 +6,7 @@ import os
 from graph_store import GraphStore, Neo4jConfig
 from models import Observation, Entity
 from tokenc import TokenClient, Model
+from semantic_router_ttc import SemanticRouter, CARE_PLAN_CONCEPTS, overshoot_event_to_text
 
 app = Flask(__name__)
 CORS(app)  
@@ -22,6 +23,7 @@ graph_store.ensure_constraints()
 
 
 token_client = None
+semantic_router = None
 
 
 def _get_token_client():
@@ -32,6 +34,13 @@ def _get_token_client():
             return None
         token_client = TokenClient(api_key=api_key)
     return token_client
+
+
+def _get_semantic_router():
+    global semantic_router
+    if semantic_router is None:
+        semantic_router = SemanticRouter(CARE_PLAN_CONCEPTS, similarity_threshold=0.45)
+    return semantic_router
 
 
 def _node_to_dict(node):
@@ -272,6 +281,74 @@ def _handle_daily_summary_request(user_id):
         "compressed_context": compressed_context,
         "tokens_saved": tokens_saved
     })
+
+
+@app.route('/overshoot_event', methods=['POST'])
+def receive_overshoot_event():
+    try:
+        data = request.json or {}
+        user_id = data.get("user_id", "user_default")
+        ts_raw = data.get("timestamp")
+        try:
+            ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00")) if ts_raw else datetime.now(timezone.utc)
+        except Exception:
+            ts = datetime.now(timezone.utc)
+
+        router_event = {
+            "user_id": user_id,
+            "timestamp": ts.isoformat(),
+            "vision": data.get("vision") or {},
+            "audio": data.get("audio") or data.get("video") or {},
+            "context": data.get("context") or {},
+            "memory_details": data.get("memory_details") or {},
+        }
+
+        router = _get_semantic_router()
+        routed = router.route_event(router_event)
+        final_text = routed["final_text"]
+        relevance = float(routed["relevance_score"])
+
+        vision = router_event["vision"]
+        audio = router_event["audio"]
+        context = router_event["context"]
+
+        place = context.get("location_type") or "unknown"
+        activity = audio.get("intent") or "unknown activity"
+
+        entities = []
+        objects = vision.get("objects") or []
+        conf = vision.get("confidence", 0.8)
+        for obj in objects:
+            entities.append(
+                Entity(
+                    kind="object",
+                    name=obj,
+                    confidence=conf,
+                )
+            )
+
+        observation = Observation(
+            activity=activity,
+            summary=final_text,
+            place=place,
+            salience=relevance,
+            entities=entities,
+        )
+
+        event_id = graph_store.upsert_observation(
+            user_id=user_id,
+            obs=observation,
+            ts=ts,
+        )
+
+        return jsonify({
+            "success": True,
+            "event_id": event_id,
+            "timestamp": ts.isoformat(),
+            "semantic_routing": routed,
+        }), 201
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 def _handle_last_meal_request(user_id):

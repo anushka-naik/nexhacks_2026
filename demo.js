@@ -45,12 +45,24 @@ TIME: Mark timestamp for each observation and note duration when relevant.
 Write factual descriptions as memory entries. No subjective interpretations. Focus on what can be definitively seen and would be useful to remember later.`,
             onResult: async (result) => {
                 console.log('Overshoot Result:', result);
-                
-                // Transform to structured format using Claude API
                 const structuredData = await transformToStructuredFormat(result.result);
-                
                 console.log('Structured Data:', structuredData);
-                resultsDiv.textContent = JSON.stringify(structuredData, null, 2);
+
+                try {
+                    const resp = await fetch("http://localhost:5000/overshoot_event", {
+                        method: "POST",
+                        headers: {
+                            "Content-Type": "application/json"
+                        },
+                        body: JSON.stringify(structuredData)
+                    });
+                    const saved = await resp.json();
+                    console.log('Saved to backend:', saved);
+                    resultsDiv.textContent = JSON.stringify(saved, null, 2);
+                } catch (err) {
+                    console.error('Backend save error:', err);
+                    resultsDiv.textContent = 'Backend error: ' + err.message;
+                }
             }
         });
 
@@ -162,4 +174,3 @@ Return ONLY valid JSON, no markdown, no explanation.`
         };
     }
 }
-
