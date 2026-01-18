@@ -3,6 +3,7 @@ from flask_cors import CORS
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import os
+import subprocess
 from dotenv import load_dotenv
 from graph_store import GraphStore, Neo4jConfig
 from models import Observation, Entity
@@ -83,6 +84,97 @@ def _events_for_day(user_id, date_obj):
 
 MEAL_KEYWORDS = ["meal", "breakfast", "lunch", "dinner", "snack", "food", "eat", "ate", "eating"]
 MEDICATION_KEYWORDS = ["medicine", "medication", "pill", "pills", "tablet", "tablets", "dose", "insulin", "drug", "drugs"]
+
+
+def send_imessage_notification(phone: str, message: str):
+    """Send iMessage notification using the Node.js script"""
+    if not phone:
+        return False, "", "Phone number not provided"
+        
+    # Script is in the project root (parent of backend)
+    script_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "imessage_notify.js")
+    
+    try:
+        # Run the node script
+        result = subprocess.run(
+            ["node", script_path, phone, message],
+            capture_output=True,
+            text=True
+        )
+        return result.returncode == 0, result.stdout, result.stderr
+    except Exception as e:
+        err = f"Error running iMessage script: {e}"
+        print(err)
+        return False, "", err
+
+
+def format_answer_for_imessage(data):
+    """Format the QA response data into a short text message"""
+    answer_type = data.get("answer_type")
+    
+    if answer_type == "daily_summary":
+        count = data.get("event_count", 0)
+        summary = data.get("compressed_context")
+        if summary:
+            return f"Daily Summary: {summary}"
+        return f"You have {count} events recorded today."
+        
+    elif answer_type == "last_meal":
+        found = data.get("found")
+        if not found:
+            return "No recent meal found."
+        event = data.get("event", {})
+        summary = event.get("summary", "Unknown meal")
+        ts = event.get("ts", "")
+        # Try to parse timestamp for better readability
+        try:
+            dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            time_str = dt.strftime("%I:%M %p")
+        except:
+            time_str = ts
+        return f"Last meal: {summary} at {time_str}"
+        
+    elif answer_type == "medication_status":
+        took_today = data.get("took_today")
+        if took_today:
+            last_event = data.get("last_event", {})
+            summary = last_event.get("summary", "")
+            return f"Yes, you took your medication today: {summary}"
+        else:
+            return "No record of you taking medication today."
+            
+    return None
+
+
+@app.route('/demo-imessage', methods=['POST'])
+def demo_imessage():
+    """Send a demo iMessage to test functionality"""
+    try:
+        data = request.json or {}
+        phone = data.get("phone") or os.environ.get("IMESSAGE_PHONE")
+        message = data.get("message", "This is a test message from your Memory Assistant.")
+        
+        if not phone:
+            return jsonify({"error": "Phone number required (in body or IMESSAGE_PHONE env var)"}), 400
+            
+        success, stdout, stderr = send_imessage_notification(phone, message)
+        
+        if success:
+            return jsonify({
+                "success": True,
+                "message": "iMessage sent successfully",
+                "details": stdout
+            })
+        else:
+            return jsonify({
+                "success": False,
+                "error": "Failed to send iMessage",
+                "details": stderr
+            }), 500
+            
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 
 @app.route('/health', methods=['GET'])
 def health_check():
@@ -427,6 +519,12 @@ def receive_overshoot_event():
             ts=ts,
         )
 
+        # Send iMessage notification for the new observation
+        phone = os.environ.get("IMESSAGE_PHONE")
+        if phone:
+            notification_msg = f"New Memory: {final_text}"[:200]
+            send_imessage_notification(phone, notification_msg)
+
         return jsonify({
             "success": True,
             "event_id": event_id,
@@ -506,16 +604,33 @@ def answer_question(user_id):
         text = question.lower()
 
         if "summary" in text and ("day" in text or "today" in text):
-            return _handle_daily_summary_request(user_id)
+            response = _handle_daily_summary_request(user_id)
+            
+        elif "last" in text and any(w in text for w in MEAL_KEYWORDS):
+            response = _handle_last_meal_request(user_id)
+            
+        else:
+            med_words = ["medicine", "medication", "medecinies", "pill", "pills", "tablet", "tablets", "dose", "insulin", "drug", "drugs"]
+            if any(w in text for w in med_words):
+                response = _handle_medication_status_request(user_id)
+            else:
+                return jsonify({"error": "unsupported question pattern"}), 400
 
-        if "last" in text and any(w in text for w in MEAL_KEYWORDS):
-            return _handle_last_meal_request(user_id)
+        # Attempt to send iMessage with the answer
+        if response.status_code == 200:
+            try:
+                # Extract JSON data from the response
+                resp_data = response.get_json()
+                msg_text = format_answer_for_imessage(resp_data)
+                
+                phone = os.environ.get("IMESSAGE_PHONE")
+                if phone and msg_text:
+                    send_imessage_notification(phone, msg_text)
+            except Exception as e:
+                print(f"Failed to send iMessage for QA: {e}")
+                
+        return response
 
-        med_words = ["medicine", "medication", "medecinies", "pill", "pills", "tablet", "tablets", "dose", "insulin", "drug", "drugs"]
-        if any(w in text for w in med_words):
-            return _handle_medication_status_request(user_id)
-
-        return jsonify({"error": "unsupported question pattern"}), 400
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

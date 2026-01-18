@@ -25,6 +25,36 @@ npm run dev
 
 ---
 
+## 📱 iMessage Integration
+
+Receive real-time notifications and answers via iMessage on macOS.
+
+### Prerequisites
+1.  **macOS** with Messages app logged in.
+2.  **Full Disk Access** granted to your Terminal/IDE (to read Messages database).
+    *   System Settings > Privacy & Security > Full Disk Access > Enable for Terminal/VS Code.
+3.  **Messages App** must be running.
+
+### Setup
+Add your phone number to `backend/.env`:
+```bash
+IMESSAGE_PHONE="+15551234567"
+```
+
+### Features
+1.  **New Memory Notifications:** Receive a text whenever a new observation is recorded.
+2.  **Q&A Responses:** Ask a question via `/qa/:userId` and get the answer texted to you.
+3.  **Demo Test:** 
+    *   Click **"Test iMessage"** in the frontend.
+    *   Or run:
+        ```bash
+        curl -X POST http://localhost:5000/demo-imessage \
+          -H "Content-Type: application/json" \
+          -d '{"message": "Hello from Second Brain!"}'
+        ```
+
+---
+
 ## 🎯 Test the Knowledge Graph
 
 ### Option 1: Automated

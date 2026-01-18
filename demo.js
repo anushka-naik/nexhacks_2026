@@ -100,6 +100,26 @@ stopBtn.addEventListener('click', async () => {
     }
 });
 
+imessageBtn.addEventListener('click', async () => {
+    try {
+        resultsDiv.textContent = 'Sending demo iMessage...';
+        const resp = await fetch("http://localhost:5000/demo-imessage", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ message: "This is a test message triggered from the Frontend Demo!" })
+        });
+        const data = await resp.json();
+        if (resp.ok) {
+            resultsDiv.textContent = 'iMessage sent! ' + JSON.stringify(data, null, 2);
+        } else {
+            resultsDiv.textContent = 'Error sending iMessage: ' + data.error + (data.details ? ' ' + data.details : '');
+        }
+    } catch (err) {
+        console.error('iMessage error:', err);
+        resultsDiv.textContent = 'Error: ' + err.message;
+    }
+});
+
 async function transformToStructuredFormat(overshootOutput) {
     try {
         const interactionDuration = (Date.now() - interactionStartTime) / 1000;
