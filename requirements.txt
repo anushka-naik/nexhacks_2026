@@ -1,0 +1,9 @@
+opencv-python
+openai
+python-dotenv
+neo4j
+tenacity
+pydantic
+sounddevice
+numpy
+cerebras-cloud-sdk
