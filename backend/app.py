@@ -3,10 +3,14 @@ from flask_cors import CORS
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import os
+from dotenv import load_dotenv
 from graph_store import GraphStore, Neo4jConfig
 from models import Observation, Entity
 from tokenc import TokenClient, Model
 from semantic_router_ttc import SemanticRouter, CARE_PLAN_CONCEPTS, overshoot_event_to_text
+
+# Load environment variables
+load_dotenv()
 
 app = Flask(__name__)
 CORS(app)  
@@ -84,6 +88,88 @@ MEDICATION_KEYWORDS = ["medicine", "medication", "pill", "pills", "tablet", "tab
 def health_check():
     """Health check endpoint"""
     return jsonify({"status": "ok", "timestamp": datetime.now(timezone.utc).isoformat()})
+
+@app.route('/demo/seed', methods=['POST'])
+def seed_demo_data():
+    """Seed database with demo data for testing queries"""
+    try:
+        user_id = "user_001"
+
+        # Sample observations
+        samples = [
+            {
+                "activity": "working on laptop",
+                "summary": "Person typing on MacBook Pro at office desk",
+                "place": "office",
+                "salience": 0.6,
+                "entities": [
+                    {"kind": "object", "name": "MacBook Pro", "confidence": 0.95},
+                    {"kind": "object", "name": "coffee mug", "confidence": 0.8}
+                ]
+            },
+            {
+                "activity": "eating lunch",
+                "summary": "Person eating sandwich and salad in kitchen",
+                "place": "kitchen",
+                "salience": 0.7,
+                "entities": [
+                    {"kind": "object", "name": "sandwich", "confidence": 0.9},
+                    {"kind": "object", "name": "salad", "confidence": 0.85}
+                ]
+            },
+            {
+                "activity": "reading",
+                "summary": "Person reading The Great Gatsby book on couch",
+                "place": "living room",
+                "salience": 0.5,
+                "entities": [
+                    {"kind": "object", "name": "The Great Gatsby", "confidence": 0.95},
+                    {"kind": "object", "name": "couch", "confidence": 0.9}
+                ]
+            },
+            {
+                "activity": "drinking water",
+                "summary": "Person drinking from Hydro Flask water bottle",
+                "place": "office",
+                "salience": 0.8,
+                "entities": [
+                    {"kind": "object", "name": "Hydro Flask", "confidence": 0.9},
+                    {"kind": "object", "name": "water", "confidence": 0.95}
+                ]
+            }
+        ]
+
+        event_ids = []
+        for sample in samples:
+            entities = [
+                Entity(
+                    kind=e.get('kind', 'object'),
+                    name=e.get('name', ''),
+                    confidence=e.get('confidence', 0.5)
+                )
+                for e in sample.get('entities', [])
+            ]
+
+            observation = Observation(
+                activity=sample['activity'],
+                summary=sample['summary'],
+                place=sample['place'],
+                salience=sample['salience'],
+                entities=entities
+            )
+
+            timestamp = datetime.now(timezone.utc)
+            event_id = graph_store.upsert_observation(user_id, observation, timestamp)
+            event_ids.append(event_id)
+
+        return jsonify({
+            "success": True,
+            "message": f"Seeded {len(event_ids)} demo events",
+            "event_ids": event_ids
+        }), 201
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/observation', methods=['POST'])
 def receive_observation():
@@ -435,5 +521,3 @@ def answer_question(user_id):
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)
-    app.run(debug=True, host='0.0.0.0', port=5000)
-    

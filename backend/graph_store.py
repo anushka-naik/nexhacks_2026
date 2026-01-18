@@ -18,6 +18,17 @@ class GraphStore:
         self.database = cfg.database  # ← STORE THE DATABASE NAME
         print(f"[GraphStore] Using database: {self.database}")
 
+    @staticmethod
+    def _node_to_dict(node):
+        """Convert Neo4j Node to dictionary for JSON serialization"""
+        if node is None:
+            return None
+        data = dict(node)
+        # Preserve the node ID if it exists
+        if hasattr(node, 'id'):
+            data['_neo4j_id'] = node.id
+        return data
+
     def close(self):
         self.driver.close()
 
@@ -167,7 +178,7 @@ class GraphStore:
                 user_id=user_id,
                 n=n,
             )
-            return [r["e"] for r in res]
+            return [self._node_to_dict(r["e"]) for r in res]
 
     def get_open_tasks(self, user_id: str, limit: int = 20) -> list[dict]:
         with self.driver.session(database=self.database) as s:  # ← USE DATABASE
@@ -181,7 +192,7 @@ class GraphStore:
                 user_id=user_id,
                 limit=limit,
             )
-            return [r["t"] for r in res]
+            return [self._node_to_dict(r["t"]) for r in res]
 
     def get_top_routines(self, user_id: str, limit: int = 10) -> list[dict]:
         with self.driver.session(database=self.database) as s:  # ← USE DATABASE
@@ -195,7 +206,7 @@ class GraphStore:
                 user_id=user_id,
                 limit=limit,
             )
-            return [r["r"] for r in res]
+            return [self._node_to_dict(r["r"]) for r in res]
 
     def search_memories_by_entity(self, user_id: str, entity_name: str, limit: int = 10) -> list[dict]:
         """Find events that involve a specific entity (person, place, object, topic)."""
@@ -213,7 +224,7 @@ class GraphStore:
                 entity_name=entity_name,
                 limit=limit,
             )
-            return [{"event": r["e"], "entities": r["entities"]} for r in res]
+            return [{"event": self._node_to_dict(r["e"]), "entities": r["entities"]} for r in res]
 
     def search_memories_by_place(self, user_id: str, place: str, limit: int = 10) -> list[dict]:
         """Find events that occurred at a specific place."""
@@ -231,7 +242,7 @@ class GraphStore:
                 place=place,
                 limit=limit,
             )
-            return [r["e"] for r in res]
+            return [self._node_to_dict(r["e"]) for r in res]
 
     def search_memories_by_keywords(self, user_id: str, keywords: list[str], limit: int = 10) -> list[dict]:
         """Find events whose summary contains any of the keywords."""
@@ -249,7 +260,7 @@ class GraphStore:
                 keywords=keywords,
                 limit=limit,
             )
-            return [r["e"] for r in res]
+            return [self._node_to_dict(r["e"]) for r in res]
 
     def get_all_entities(self, user_id: str, kind: str | None = None, limit: int = 50) -> list[dict]:
         """Get all known entities, optionally filtered by kind."""
@@ -277,7 +288,7 @@ class GraphStore:
                     user_id=user_id,
                     limit=limit,
                 )
-            return [r["en"] for r in res]
+            return [self._node_to_dict(r["en"]) for r in res]
 
     def find_related_memories(self, user_id: str, current_entities: list[str], current_place: str | None, limit: int = 5) -> list[dict]:
         """
@@ -301,7 +312,7 @@ class GraphStore:
                     entity_names=current_entities,
                     limit=limit,
                 )
-                entity_results = [{"event": r["e"], "matched_on": r["matched_entities"]} for r in res]
+                entity_results = [{"event": self._node_to_dict(r["e"]), "matched_on": r["matched_entities"]} for r in res]
 
             # Search for events at the same place
             place_results = []
@@ -319,7 +330,7 @@ class GraphStore:
                     place=current_place,
                     limit=limit,
                 )
-                place_results = [{"event": r["e"], "matched_on": ["place: " + current_place]} for r in res]
+                place_results = [{"event": self._node_to_dict(r["e"]), "matched_on": ["place: " + current_place]} for r in res]
 
             # Combine and deduplicate
             seen_ids = set()

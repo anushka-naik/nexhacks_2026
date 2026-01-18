@@ -52,7 +52,7 @@ Write factual descriptions as memory entries. No subjective interpretations. Foc
                     const resp = await fetch("http://localhost:5000/overshoot_event", {
                         method: "POST",
                         headers: {
-                            "Content-Type": "application/json"
+                            "Content-Type": "application/json",
                         },
                         body: JSON.stringify(structuredData)
                     });
@@ -164,7 +164,7 @@ Return ONLY valid JSON, no markdown, no explanation.`
                 objects: ["error transforming"],
                 confidence: 0
             },
-            audio: {
+            video: {
                 intent: "error"
             },
             context: {
