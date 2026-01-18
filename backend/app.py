@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import os
 from graph_store import GraphStore, Neo4jConfig
 from models import Observation, Entity
+from tokenc import TokenClient, Model
 
 app = Flask(__name__)
 CORS(app)  
@@ -16,9 +17,59 @@ neo4j_config = Neo4jConfig(
     password="GrFPX0A9rfqeWZgJY-GNygpTSESYCI8yobmy2QUI_QA"
 )
 
-# Initialize GraphStore
 graph_store = GraphStore(neo4j_config)
 graph_store.ensure_constraints()
+
+
+token_client = None
+
+
+def _get_token_client():
+    global token_client
+    if token_client is None:
+        api_key = os.environ.get("TOKENC_API_KEY")
+        if not api_key:
+            return None
+        token_client = TokenClient(api_key=api_key)
+    return token_client
+
+
+def _node_to_dict(node):
+    data = dict(node)
+    node_id = node.get("id")
+    if node_id is not None:
+        data["id"] = node_id
+    return data
+
+
+def _parse_ts(value):
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value
+    try:
+        return datetime.fromisoformat(value)
+    except Exception:
+        return None
+
+
+def _events_for_day(user_id, date_obj):
+    events = graph_store.get_recent_events(user_id, 200)
+    results = []
+    for node in events:
+        ts = node.get("ts")
+        dt = _parse_ts(ts)
+        if not dt:
+            continue
+        if dt.date() == date_obj:
+            event = _node_to_dict(node)
+            results.append(event)
+    results.sort(key=lambda e: e.get("ts", ""))
+    return results
+
+
+MEAL_KEYWORDS = ["meal", "breakfast", "lunch", "dinner", "snack", "food", "eat", "ate", "eating"]
+MEDICATION_KEYWORDS = ["medicine", "medication", "pill", "pills", "tablet", "tablets", "dose", "insulin", "drug", "drugs"]
 
 @app.route('/health', methods=['GET'])
 def health_check():
@@ -170,6 +221,142 @@ def get_entities(user_id):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+
+def _handle_daily_summary_request(user_id):
+    today = datetime.now(timezone.utc).date()
+    events = _events_for_day(user_id, today)
+    raw_lines = []
+    for e in events:
+        parts = []
+        ts = e.get("ts")
+        if ts:
+            parts.append(f"time: {ts}")
+        activity = e.get("activity")
+        if activity:
+            parts.append(f"activity: {activity}")
+        summary = e.get("summary")
+        if summary:
+            parts.append(f"summary: {summary}")
+        place = e.get("place")
+        if place:
+            parts.append(f"place: {place}")
+        salience = e.get("salience")
+        if salience is not None:
+            parts.append(f"salience: {salience}")
+        if parts:
+            raw_lines.append("; ".join(parts))
+    raw_context = "\n".join(raw_lines)
+
+    compressed_context = None
+    tokens_saved = None
+    client = _get_token_client()
+    if client and raw_context:
+        try:
+            response = client.compress_input(
+                input=raw_context,
+                model=Model.BEAR_1,
+                aggressiveness=0.6,
+            )
+            compressed_context = response.output
+            tokens_saved = response.tokens_saved
+        except Exception:
+            compressed_context = None
+            tokens_saved = None
+
+    return jsonify({
+        "answer_type": "daily_summary",
+        "user_id": user_id,
+        "date": today.isoformat(),
+        "events": events,
+        "event_count": len(events),
+        "compressed_context": compressed_context,
+        "tokens_saved": tokens_saved
+    })
+
+
+def _handle_last_meal_request(user_id):
+    nodes = graph_store.search_memories_by_keywords(user_id, MEAL_KEYWORDS, limit=50)
+    if not nodes:
+        return jsonify({
+            "answer_type": "last_meal",
+            "user_id": user_id,
+            "found": False,
+            "event": None
+        })
+
+    def sort_key(node):
+        dt = _parse_ts(node.get("ts"))
+        if not dt:
+            return datetime.min.replace(tzinfo=timezone.utc)
+        return dt
+
+    last_node = sorted(nodes, key=sort_key, reverse=True)[0]
+    event = _node_to_dict(last_node)
+    return jsonify({
+        "answer_type": "last_meal",
+        "user_id": user_id,
+        "found": True,
+        "event": event
+    })
+
+
+def _handle_medication_status_request(user_id):
+    nodes = graph_store.search_memories_by_keywords(user_id, MEDICATION_KEYWORDS, limit=50)
+    if not nodes:
+        return jsonify({
+            "answer_type": "medication_status",
+            "user_id": user_id,
+            "found": False,
+            "last_event": None,
+            "took_today": False
+        })
+
+    def sort_key(node):
+        dt = _parse_ts(node.get("ts"))
+        if not dt:
+            return datetime.min.replace(tzinfo=timezone.utc)
+        return dt
+
+    last_node = sorted(nodes, key=sort_key, reverse=True)[0]
+    dt = _parse_ts(last_node.get("ts"))
+    today = datetime.now(timezone.utc).date()
+    took_today = dt.date() == today if dt else False
+    event = _node_to_dict(last_node)
+
+    return jsonify({
+        "answer_type": "medication_status",
+        "user_id": user_id,
+        "found": True,
+        "last_event": event,
+        "took_today": took_today
+    })
+
+
+@app.route('/qa/<user_id>', methods=['POST'])
+def answer_question(user_id):
+    try:
+        data = request.json or {}
+        question = data.get("question", "")
+        if not isinstance(question, str) or not question.strip():
+            return jsonify({"error": "question is required"}), 400
+
+        text = question.lower()
+
+        if "summary" in text and ("day" in text or "today" in text):
+            return _handle_daily_summary_request(user_id)
+
+        if "last" in text and any(w in text for w in MEAL_KEYWORDS):
+            return _handle_last_meal_request(user_id)
+
+        med_words = ["medicine", "medication", "medecinies", "pill", "pills", "tablet", "tablets", "dose", "insulin", "drug", "drugs"]
+        if any(w in text for w in med_words):
+            return _handle_medication_status_request(user_id)
+
+        return jsonify({"error": "unsupported question pattern"}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 if __name__ == '__main__':
+    app.run(debug=True, host='0.0.0.0', port=5000)
     app.run(debug=True, host='0.0.0.0', port=5000)
     
